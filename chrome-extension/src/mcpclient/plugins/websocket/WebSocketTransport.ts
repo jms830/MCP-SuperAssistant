@@ -26,6 +26,7 @@ export class WebSocketTransport implements Transport {
   private isConnected: boolean = false;
   // Removed ping/pong timers - using MCP protocol connection management
   private eventListeners = new Map<string, Set<Function>>();
+  private connectionTimeout: number | null = null;
 
   constructor(url: string, options: WebSocketTransportOptions = {}) {
     this.url = url;
@@ -52,15 +53,19 @@ export class WebSocketTransport implements Transport {
         this.ws = new WebSocket(this.url, this.options.protocols);
         this.ws.binaryType = this.options.binaryType || 'arraybuffer';
 
-        const connectionTimeout = setTimeout(() => {
+        this.connectionTimeout = setTimeout(() => {
           if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
             this.ws.close();
+            this.connectionTimeout = null;
             reject(new Error('WebSocket connection timeout'));
           }
         }, 10000); // 10 second timeout
 
         this.ws.onopen = () => {
-          clearTimeout(connectionTimeout);
+          if (this.connectionTimeout) {
+            clearTimeout(this.connectionTimeout);
+            this.connectionTimeout = null;
+          }
           console.log('[WebSocketTransport] Connected');
           this.isConnected = true;
           this.startPingPong();
@@ -69,7 +74,10 @@ export class WebSocketTransport implements Transport {
         };
 
         this.ws.onclose = event => {
-          clearTimeout(connectionTimeout);
+          if (this.connectionTimeout) {
+            clearTimeout(this.connectionTimeout);
+            this.connectionTimeout = null;
+          }
           console.log(`[WebSocketTransport] Disconnected: ${event.code} ${event.reason}`);
           this.isConnected = false;
           this.stopPingPong();
@@ -81,7 +89,10 @@ export class WebSocketTransport implements Transport {
         };
 
         this.ws.onerror = error => {
-          clearTimeout(connectionTimeout);
+          if (this.connectionTimeout) {
+            clearTimeout(this.connectionTimeout);
+            this.connectionTimeout = null;
+          }
           console.error('[WebSocketTransport] Error:', error);
           this.isConnected = false;
           this.emit('error', error);
@@ -127,6 +138,10 @@ export class WebSocketTransport implements Transport {
           }
         };
       } catch (error) {
+        if (this.connectionTimeout) {
+          clearTimeout(this.connectionTimeout);
+          this.connectionTimeout = null;
+        }
         reject(error);
       }
     });
@@ -136,6 +151,11 @@ export class WebSocketTransport implements Transport {
     console.log('[WebSocketTransport] Closing connection');
     this.isConnected = false;
     this.stopPingPong();
+
+    if (this.connectionTimeout) {
+      clearTimeout(this.connectionTimeout);
+      this.connectionTimeout = null;
+    }
 
     if (this.ws) {
       this.ws.close(1000, 'Normal closure');

@@ -10,33 +10,57 @@ const isBrowserContext = typeof window !== 'undefined' && typeof document !== 'u
 // Environment-based configuration
 const getFirebaseConfig = () => {
   //const isDevelopment = process.env.NODE_ENV === 'development';
-const isDevelopment = false;
+  const isDevelopment = false;
   
-return {
-    apiKey: isDevelopment ? process.env.FIREBASE_API_KEY_DEV : process.env.FIREBASE_API_KEY_PROD,
-    authDomain: isDevelopment ? process.env.FIREBASE_AUTH_DOMAIN_DEV : process.env.FIREBASE_AUTH_DOMAIN_PROD,
+  // Safe environment variable access with proper fallbacks
+  const getEnvVar = (varName: string): string => {
+    if (typeof (globalThis as any).process !== 'undefined' && (globalThis as any).process.env) {
+      return (globalThis as any).process.env[varName] || '';
+    }
+    return '';
+  };
+  
+  return {
+    apiKey: isDevelopment ? getEnvVar('FIREBASE_API_KEY_DEV') : getEnvVar('FIREBASE_API_KEY_PROD'),
+    authDomain: isDevelopment ? getEnvVar('FIREBASE_AUTH_DOMAIN_DEV') : getEnvVar('FIREBASE_AUTH_DOMAIN_PROD'),
     // Use consistent project ID and storage bucket for both environments
-    projectId: isDevelopment ? process.env.FIREBASE_PROJECT_ID_DEV : process.env.FIREBASE_PROJECT_ID_PROD,
+    projectId: isDevelopment ? getEnvVar('FIREBASE_PROJECT_ID_DEV') : getEnvVar('FIREBASE_PROJECT_ID_PROD'),
     // Use consistent storage bucket for both environments
-    storageBucket: isDevelopment ? process.env.FIREBASE_STORAGE_BUCKET_DEV : process.env.FIREBASE_STORAGE_BUCKET_PROD,
-    messagingSenderId: process.env.FIREBASE_SENDER_ID,
-    appId: isDevelopment ? process.env.FIREBASE_APP_ID_DEV : process.env.FIREBASE_APP_ID_PROD,
-    measurementId: isDevelopment ? process.env.FIREBASE_MEASUREMENT_ID_DEV : process.env.FIREBASE_MEASUREMENT_ID_PROD
-};
+    storageBucket: isDevelopment ? getEnvVar('FIREBASE_STORAGE_BUCKET_DEV') : getEnvVar('FIREBASE_STORAGE_BUCKET_PROD'),
+    messagingSenderId: getEnvVar('FIREBASE_SENDER_ID'),
+    appId: isDevelopment ? getEnvVar('FIREBASE_APP_ID_DEV') : getEnvVar('FIREBASE_APP_ID_PROD'),
+    measurementId: isDevelopment ? getEnvVar('FIREBASE_MEASUREMENT_ID_DEV') : getEnvVar('FIREBASE_MEASUREMENT_ID_PROD')
+  };
 };
 
-// Initialize Firebase
-const app = initializeApp(getFirebaseConfig());
+// Initialize Firebase with error handling
+let app: any = null;
+try {
+  const config = getFirebaseConfig();
+  // Validate that essential configuration is present
+  if (!config.apiKey || !config.projectId) {
+    console.warn('[Firebase] Missing essential configuration, Firebase services will be disabled');
+    throw new Error('Missing essential Firebase configuration');
+  }
+  app = initializeApp(config);
+  console.log('[Firebase] App initialized successfully');
+} catch (error) {
+  console.error('[Firebase] Failed to initialize app:', error);
+  // Continue without Firebase services
+}
 
 // Initialize App Check for security (production only) - ONLY in browser context
 let appCheck: any = null;
-if (process.env.NODE_ENV === 'production' && 
-    process.env.RECAPTCHA_SITE_KEY && 
+if (app && 
+    typeof (globalThis as any).process !== 'undefined' && 
+    (globalThis as any).process.env && 
+    (globalThis as any).process.env.NODE_ENV === 'production' && 
+    (globalThis as any).process.env.RECAPTCHA_SITE_KEY && 
     isBrowserContext && 
     !isServiceWorker) {
   try {
     appCheck = initializeAppCheck(app, {
-      provider: new ReCaptchaV3Provider(process.env.RECAPTCHA_SITE_KEY),
+      provider: new ReCaptchaV3Provider((globalThis as any).process.env.RECAPTCHA_SITE_KEY),
       isTokenAutoRefreshEnabled: true
     });
     console.log('[Firebase] App Check initialized');
@@ -46,12 +70,12 @@ if (process.env.NODE_ENV === 'production' &&
 }
 
 // Initialize Remote Config (works in both service worker and browser contexts)
-export const remoteConfig = getRemoteConfig(app);
+export const remoteConfig = app ? getRemoteConfig(app) : null;
 
 // Initialize Analytics only in supported environments
 let analytics: any = null;
 const initializeAnalytics = async () => {
-  if (isBrowserContext && !isServiceWorker) {
+  if (app && isBrowserContext && !isServiceWorker) {
     try {
       const supported = await isSupported();
       if (supported) {
@@ -72,10 +96,16 @@ initializeAnalytics();
 export { analytics, appCheck };
 
 // Configure Remote Config with enhanced security
-remoteConfig.settings = {
-  minimumFetchIntervalMillis: process.env.NODE_ENV === 'development' ? 300000 : 3600000, // 5 min dev, 1 hour prod
-  fetchTimeoutMillis: 60000, // 1 minute
-};
+if (remoteConfig) {
+  const isDevelopment = typeof (globalThis as any).process !== 'undefined' && 
+                        (globalThis as any).process.env && 
+                        (globalThis as any).process.env.NODE_ENV === 'development';
+  
+  remoteConfig.settings = {
+    minimumFetchIntervalMillis: isDevelopment ? 300000 : 3600000, // 5 min dev, 1 hour prod
+    fetchTimeoutMillis: 60000, // 1 minute
+  };
+}
 
 // Content validation function
 const sanitizeHtml = (content: string): string => {
@@ -109,37 +139,39 @@ const validateConfigContent = (content: any): boolean => {
 };
 
 // Set defaults with validation
-remoteConfig.defaultConfig = {
-  // Notification defaults
-  'notifications_enabled': true,
-  'max_notifications_per_day': 3,
-  'notification_cooldown_hours': 4,
-  
-  // Feature flag defaults
-  'features': JSON.stringify({
-    'sidebar_v2': { enabled: false, rollout: 0, schema_version: 1 },
-    'ai_tools_enhanced': { enabled: true, rollout: 100, schema_version: 1 },
-    'notification_system': { enabled: true, rollout: 100, schema_version: 1 }
-  }),
-  
-  // Configuration metadata
-  'config_version': '1.0.0',
-  'schema_version': 1,
-  'last_updated': new Date().toISOString(),
-  
-  // Privacy and compliance
-  'privacy_policy_version': '1.0.0',
-  'data_collection_consent_required': true,
-  
-  // Notification configurations
-  'active_notifications': JSON.stringify([]),
-  'update_notifications': JSON.stringify({
-    enabled: true,
-    min_version_gap: '0.1.0',
-    channels: ['in-app', 'badge'],
-    schema_version: 1
-  })
-};
+if (remoteConfig) {
+  remoteConfig.defaultConfig = {
+    // Notification defaults
+    'notifications_enabled': true,
+    'max_notifications_per_day': 3,
+    'notification_cooldown_hours': 4,
+    
+    // Feature flag defaults
+    'features': JSON.stringify({
+      'sidebar_v2': { enabled: false, rollout: 0, schema_version: 1 },
+      'ai_tools_enhanced': { enabled: true, rollout: 100, schema_version: 1 },
+      'notification_system': { enabled: true, rollout: 100, schema_version: 1 }
+    }),
+    
+    // Configuration metadata
+    'config_version': '1.0.0',
+    'schema_version': 1,
+    'last_updated': new Date().toISOString(),
+    
+    // Privacy and compliance
+    'privacy_policy_version': '1.0.0',
+    'data_collection_consent_required': true,
+    
+    // Notification configurations
+    'active_notifications': JSON.stringify([]),
+    'update_notifications': JSON.stringify({
+      enabled: true,
+      min_version_gap: '0.1.0',
+      channels: ['in-app', 'badge'],
+      schema_version: 1
+    })
+  };
+}
 
 // Export utility functions
 export { fetchAndActivate, getValue, getAll, validateConfigContent, sanitizeHtml };
