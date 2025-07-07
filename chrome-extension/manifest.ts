@@ -44,6 +44,7 @@ const manifest = {
     '*://*.chat.mistral.ai/*',
     '*://*.github.com/*',
     '*://*.copilot.github.com/*',
+    '*://*.kagi.com/*',
   ],
 
   permissions: ['storage', 'clipboardWrite'],
